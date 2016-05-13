@@ -1,0 +1,408 @@
+
+<!--
+    Relative paths assume component is being run from inside an app or another component, where dependencies are flat
+    siblings. When this component is run from its own repo (e.g. ui tests, examples), we assume the server is started with
+    'grunt depserve' (or similar server setup) to enable correct finding of bower dependencies for local runs
+    See https://github.sw.ge.com/jreichenberg/grunt-dep-serve#why-do-we-need-this
+-->
+<link rel="import" href="../polymer/polymer.html"/>
+<script src="../d3/d3.js"></script>
+<script src="../dimple/dist/dimple.latest.min.js"></script>
+
+
+<!--
+Polymer wrapper for d3 dimplejs. Reads CSV files.
+
+##### Usage
+
+    <px-dimple-chart series-type="bar"
+    filter-type="component"
+    url="sample-data/sample-data.csv"
+    series-order-rule="repaircost"
+    x-axis="Sortfield"
+    y-axis="repaircost"
+    axis-order-rule="repaircost" 
+    category-fields='["repaircost"]'
+    ></px-dimple-chart>
+
+@element px-dimple-chart
+@blurb Element providing solution to no problem in particular.
+@homepage index.html
+@demo demo.html
+-->
+<dom-module id="px-dimple-chart">
+
+  <template>
+
+        <div class="flex flex--row u-mt-">
+            <div class="flex flex--col">
+              <small class="caps text--center">Toggle Component</small>
+              <template is="dom-repeat" id="componentList" items="{{filterValues}}">
+                <div class="layout layout--middle layout--top layout--center">
+                  <button class="btn btn--small btn--tertiary" on-click="toggleSelection">{{item}}</button>
+                </div>
+              </template>
+            </div>
+        </div>
+        <svg id="chartContainer" width="100%" height="{{height}}"></svg>
+
+  </template>
+</dom-module>
+<script>
+    Polymer({
+
+        is: 'px-dimple-chart',
+
+        /**
+         * Properties block, expose attribute values to the DOM via 'reflect'
+         *
+         * @property properties
+         * @type Object
+         */
+        properties: {
+          
+          height: {
+            type: Number,
+            value: 400,
+            notify: true
+          },
+
+          url: {
+            type: String,
+            observer: 'drawChartDebounced'
+          },
+          /*
+           * data property: 
+           * we use d3.csv(url, function(data){ this.data = data; }) inside the getData call to set this object
+           * D3 provides built-in support for parsing comma-separated values, tab-separated values and arbitrary
+           * delimiter-separated values. These tabular formats are popular with spreadsheet programs such as
+           * Microsoft Excel. Tabular formats are often more space-efficient than JSON, which can improve
+           * loading times for large datasets.
+           * alternatively, you may set this property to a json response of your own. 
+           */
+          data: {
+            type: Object,
+            observer: 'drawChartDebounced'
+          },
+          showLegendSelect: {
+            type: Boolean,
+            value: false
+          },
+          /*
+           * addBubblePlot: add a bubble plot to the chart. This may be useful when providing context to the data
+           * To vary bubble sizes, add a field name from the data to the zAxis property and its distinct values
+           * will be used to calculate the size.
+           */
+          addBubblePlot: {
+            type: Boolean,
+            observer: '_addBubbleSeries'
+          },
+          bubblePlotCategory: {
+            type: String,
+            value: ''
+          },
+          /*
+           * 'x' Axis
+           * By default, will expect to tie to categorical data rather than measure data.
+           */
+          xAxis: {
+            type: Object,
+            value: {
+              type: 'category',
+              fields: [],
+              order: ''
+            }
+          },
+          /*
+           * One y axis is required, but you can set multiple axes of each type and the graph will display them.
+           * By default, <y> will expect to plot measure data rather than categorical data.
+           * 
+           * Changing the axis to 'Percent' will tie the largest value on the defined field to 100%, and compare
+           * the rest of the values to that
+           * 
+           * addMeasureAxis, addTimeAxis, addPctAxis, addCategoryAxis, addColorAxis and addLogAxis
+           * details for the different types can be found on the dimple API page below
+           * https://github.com/PMSI-AlignAlytics/dimple/wiki/dimple.axis#constructor
+           */
+          yAxis: {
+            type: Object,
+            value: {
+              type: 'measure',
+              field: '',
+              hidden: true,
+              showGridLines: false
+            }
+          },
+          /*
+           * defaultColors
+           *
+           * A collection of dimple.color objects. These colors will be arbitrarily assigned to data values during
+           * the chart drawing. Once all colors have been used, the first will be used again
+           * https://github.com/PMSI-AlignAlytics/dimple/wiki/dimple.chart#defaultColors
+           */
+          defaultColors: {
+            type: Array,
+            value: [
+                new dimple.color("#265dab"),
+                new dimple.color("#df5c24"),
+                new dimple.color("#059748"),
+                new dimple.color("#9d722a"),
+                new dimple.color("#7b3a96"),
+                new dimple.color("#c7b42e"),
+                new dimple.color("#cb2027")
+            ]
+          },
+          /*
+           * Type of series to draw.
+           * Accepts 'line', 'bar', 'area' and 'bubble'
+           */
+          plotType: {
+            type: String,
+            value: 'bar'
+          },
+          /*
+           * add a unique ID to a series to trigger custom events
+           */
+          seriesId: {
+            type: String
+          },
+          /*
+           * categoryFields
+           *
+           * Requires a string or an array of strings by which the values in the series dimension will be ordered
+           * If no order rules are specified the default behaviour is to sort by the dimension itself
+           * https://github.com/PMSI-AlignAlytics/dimple/wiki/dimple.series
+           */
+          seriesCategoryField: {
+            type: Array,
+            value: []
+          },
+          /*
+           * seriesOrderRule
+           *
+           * Requires a string or an array of strings
+           * ie "count" or ["count", "cost", "componentName"] where the last value will be used for the legend
+           * items
+           * https://github.com/PMSI-AlignAlytics/dimple/wiki/dimple.series#addOrderRule
+           */
+          dimpleSeries: {
+            type: Array,
+            value: []
+          },
+
+          seriesOrderRule: {
+            type: String,
+            value: ''
+          },
+
+          secondYAxis:{
+            type: String,
+            value: ''
+          },
+
+
+          zAxis: {
+            type: String,
+            value: ''
+          },
+
+          storyBoardField: {
+            type: String,
+            value: 'sortField'
+          },
+          frameDuration: {
+            type: Number,
+            value: 3000
+          },
+          filterType: String,
+          colorAxisColors: {
+            type: Array,
+            value: ["#4364dd", "#e8a736", "#dd6b1f", "#e53838"]
+          },
+          colorAxisCategory: {
+            type: String,
+            value: ''
+          }
+        },
+
+
+        drawChartDebounced: function(data, previous) {
+            this.debounce('drawChart', function() {
+                this.drawChart();
+            }, 50);
+        },
+
+        /*
+         * Here we use the d3.csv to fetch and parse our data to which we then set to the data property
+         * Alternatively, you may specify json to the data property 
+         */
+        getData: function(url){
+          var me = this;
+          if(me.data == null){
+            d3.csv(this.url, function(data) {
+              me.data = data;
+            });
+          }
+        },
+
+        createChartObj: function(){
+          var me = this;
+          me.svg = d3.select(this.$.chartContainer);
+          me.svg.attr("height", me.height);
+          // var topFive = dimple.filterData(data, "component", "DRIV")
+          // console.log(topFive);
+
+          // Create the chart
+          me.dChart = new dimple.chart(me.svg, me.data);
+          me.dChart.defaultColors = this.defaultColors;
+        },
+        // draw chart axis
+        drawAxisX: function(){
+          var me = this;
+          me.x = me.dChart.addCategoryAxis("x", this.xAxis.fields);
+              me.x.addOrderRule(this.xAxis.order, true);
+              me.x.title = this.xAxis.title;
+              me.x.showGridlines = false;
+        },
+        drawAxisY: function(){
+          var me = this;
+          me.y = me.dChart.addMeasureAxis("y",this.yAxis.field);
+          me.y.hidden = this.yAxis.hidden;
+          me.y.showGridlines = this.yAxis.showGridLines;
+          me.y.fontSize = "10px";
+
+          me.y2 = me.dChart.addMeasureAxis("y", this.secondYAxis);
+              me.y2.hidden = true;
+              me.y2.showGridlines = false;
+
+        },
+        drawAxisZ: function(){
+          var me = this;
+          me.z = me.dChart.addMeasureAxis("z", this.zAxis);
+        },
+        // remove axis line and path shapes.
+        removeAxisAttr: function(){
+          var me = this;
+          me.y.titleShape.remove();
+          me.x.titleShape.remove();
+          me.x.shapes.selectAll("line,path").remove();
+          me.x.shapes.selectAll("text").style("font-family", "GE Inspira");
+        },
+        // get series types based on property string
+        getPlotType: function(){
+          if (this.plotType == 'bar'){
+            return this.plotType = dimple.plot.bar;
+          }
+          if (this.plotType == 'line'){
+            return this.plotType = dimple.plot.line;
+          }
+          if (this.plotType == 'area'){
+            return this.plotType = dimple.plot.area;
+          }
+          if (this.plotType == 'bubble'){
+            return this.plotType = dimple.plot.bubble;
+          }
+        },
+        // Add a color axis to the chart. A color axis provides dynamic coloring for series. https://github.com/PMSI-AlignAlytics/dimple/wiki/dimple.chart#addColorAxis
+        addAxisColors: function(){
+          var me = this;
+          me.colorAxis = me.dChart.addColorAxis(this.colorAxisCategory, this.colorAxisColors);
+        },
+        // create series
+        addSeries: function(){
+          var self = this;
+            self.series = self.dChart.addSeries(self.seriesCategoryField, self.plotType, [self.x, self.y]);
+            self.series.seriesId = this.seriesId;
+            self.series.c = self.colorAxis;
+          if (self.seriesOrderRule != null){
+            self.series.addOrderRule(this.seriesOrderRule);
+          }
+        },
+        addBubbleSeries: function(){
+          var me = this;
+          if(this.addBubblePlot){
+            me.bubbleSeries = me.dChart.addSeries(me.bubblePlotCategory, dimple.plot.bubble, [me.x, me.y2, me.z]);
+          }
+          me.z.over
+        },
+        seriesControls: function() {
+          var me = this;
+            // create legend for series
+            me.myLegend = me.dChart.addLegend(650, 100, 60, 300, "Right");
+            me.myLegend.fontSize = "14px";
+            me.myLegend.fontFamily = "GE Inspira";
+
+            var groupToggle = false;
+
+            // =======================
+            // button functions to change xAxis categories before dimple draw method is called
+            // sortField category only and also removed component category if added
+
+            // ===============================
+            // call dimple draw method, stagger and draw chart
+            me.dChart.staggerDraw = true;
+            me.dChart.draw(250);
+                
+            // dimple.legend.shapes: Once a legend is rendered via the chart's draw method, this will contain the svg shapes allowing further manipulation with standard javascript or d3.
+
+            me.dChart.legends = [];
+
+            // Get a unique list of component values to use when filtering
+            var filterValues = dimple.getUniqueValues(this.data, this.filterType);
+            this.filterValues = filterValues;
+                     
+            this.toggleSelection = function(e) {
+              var item = this.$.componentList.itemForElement(e.target),
+                  hide = false,
+                  newFilters = [];
+
+              filterValues.forEach(function (f) {
+                if (f === item) {
+                  hide = true;
+                } else {
+                  newFilters.push(f);
+                }
+              });
+
+              if (hide) {
+                d3.select(item).style("background-color", "#2b2b2b");
+              } else {
+                newFilters.push(item);
+              }
+
+              filterValues = newFilters;
+              me.dChart.data = dimple.filterData(me.data, "component", filterValues);
+              me.dChart.draw(600);
+              me.removeAxisAttr();
+            }
+
+            me.removeAxisAttr();
+        },
+        // draw chart
+        drawChart: function(){
+            if(this.data && this.data.length > 0) {
+              this.createChartObj();
+              this.drawAxisX();
+              this.drawAxisY();
+              this.drawAxisZ();
+              this.getPlotType();
+              this.addAxisColors();
+              this.addSeries();
+              this.addBubbleSeries();
+              this.seriesControls();
+            } else {
+              var that = this;
+              var timeout = setTimeout(function(){
+                  that.drawChart();
+              }, 100);
+            }
+        },
+        // fetch data on dom ready
+        // Fired on attached event
+        attached: function() {
+            this.getData();
+            this.drawChartDebounced();
+        }
+
+    });
+</script>

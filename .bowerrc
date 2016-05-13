@@ -1,0 +1,6 @@
+{
+ "proxy": "http://HTTP-PROXY-sydney.corporate.ge.com:80",
+ "https-proxy": "http://HTTP-PROXY-sydney.corporate.ge.com:80",
+ "registry": "https://bower.herokuapp.com/",
+ "directory": "./bower_components"
+}
